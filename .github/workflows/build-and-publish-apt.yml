@@ -87,17 +87,30 @@ jobs:
           files: lytescope.deb
 
       - name: Prepare SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
+          set -e
+
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>&1
-          ssh -v -i ~/.ssh/id_ed25519 -o BatchMode=yes \
-            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH OK" \
-            > /tmp/ssh_out.txt 2>&1 || true
-          cat /tmp/ssh_out.txt
+
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts || true
+
+          ssh -v -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" "echo SSH OK"
 
       - name: Deploy to lytescope.com/apt via SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          rsync -avz --delete -e "ssh -i ~/.ssh/id_ed25519" apt/ \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/
+          rsync -avz --delete -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new" apt/ \
+            "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
