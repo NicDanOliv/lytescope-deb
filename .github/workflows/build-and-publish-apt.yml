@@ -89,17 +89,10 @@ jobs:
       - name: Prepare SSH
         run: |
           mkdir -p ~/.ssh
-
-          echo "Checking secrets..."
-          [ -z "${{ secrets.SSH_HOST }}" ] && echo "MISSING: SSH_HOST" || echo "OK: SSH_HOST"
-          [ -z "${{ secrets.SSH_USER }}" ] && echo "MISSING: SSH_USER" || echo "OK: SSH_USER"
-          [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ] && echo "MISSING: SSH_PRIVATE_KEY" || echo "OK: SSH_PRIVATE_KEY"
-          [ -z "${{ secrets.DEPLOY_PATH }}" ] && echo "MISSING: DEPLOY_PATH" || echo "OK: DEPLOY_PATH"
-
           printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH OK"
+          ssh -v -i ~/.ssh/id_ed25519 -o BatchMode=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH OK"
 
       - name: Deploy to lytescope.com/apt via SSH
         run: |
