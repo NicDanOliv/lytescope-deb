@@ -87,37 +87,19 @@ jobs:
           files: lytescope.deb
 
       - name: Prepare SSH
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          set -e
-
-          if [ -z "$SSH_HOST" ]; then
-            echo "SSH_HOST secret is missing"
-            exit 1
-          fi
-
-          if [ -z "$SSH_USER" ]; then
-            echo "SSH_USER secret is missing"
-            exit 1
-          fi
-
-          if [ -z "$SSH_PRIVATE_KEY" ]; then
-            echo "SSH_PRIVATE_KEY secret is missing"
-            exit 1
-          fi
-
           mkdir -p ~/.ssh
 
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          echo "Checking secrets..."
+          [ -z "${{ secrets.SSH_HOST }}" ] && echo "MISSING: SSH_HOST" || echo "OK: SSH_HOST"
+          [ -z "${{ secrets.SSH_USER }}" ] && echo "MISSING: SSH_USER" || echo "OK: SSH_USER"
+          [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ] && echo "MISSING: SSH_PRIVATE_KEY" || echo "OK: SSH_PRIVATE_KEY"
+          [ -z "${{ secrets.DEPLOY_PATH }}" ] && echo "MISSING: DEPLOY_PATH" || echo "OK: DEPLOY_PATH"
+
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
-
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$SSH_USER@$SSH_HOST" "echo SSH connection OK"
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH OK"
 
       - name: Deploy to lytescope.com/apt via SSH
         run: |
