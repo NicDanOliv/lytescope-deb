@@ -88,10 +88,32 @@ jobs:
 
       - name: Prepare SSH
         run: |
+          set -e
+
+          if [ -z "${{ secrets.SSH_HOST }}" ]; then
+            echo "SSH_HOST secret is missing"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.SSH_USER }}" ]; then
+            echo "SSH_USER secret is missing"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "SSH_PRIVATE_KEY secret is missing"
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH connection OK"
 
       - name: Deploy to lytescope.com/apt via SSH
         run: |
