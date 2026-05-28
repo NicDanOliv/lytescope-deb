@@ -1,0 +1,12 @@
+lytescope.deb
+*.deb
+build/
+dist/
+*.changes
+*.buildinfo
+*.dsc
+*.tar.*
+*.gpg
+*.key
+*.asc
+.env

@@ -1,0 +1,95 @@
+name: Build and Publish APT Repo
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils gnupg rsync openssh-client
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update version in control file
+        run: |
+          sed -i "s/^Version:.*/Version: ${{ steps.version.outputs.VERSION }}/" lytescope_0.1.0/DEBIAN/control
+
+      - name: Update version in agent config
+        run: |
+          sed -i "s/^LYTESCOPE_AGENT_VERSION=.*/LYTESCOPE_AGENT_VERSION=\"${{ steps.version.outputs.VERSION }}\"/" lytescope_0.1.0/etc/lytescope/agent.conf
+
+      - name: Build .deb
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format LONG
+
+      - name: Export public GPG key
+        run: |
+          gpg --armor --export "${{ secrets.GPG_KEY_ID }}" > lytescope.gpg
+
+      - name: Set up APT repo structure
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+
+          mkdir -p apt/pool/main
+          mkdir -p apt/dists/stable/main/binary-all
+
+          cp lytescope.deb apt/pool/main/lytescope_${VERSION}_all.deb
+          cp lytescope.gpg apt/lytescope.gpg
+
+          cd apt
+
+          dpkg-scanpackages --arch all pool/main > dists/stable/main/binary-all/Packages
+          gzip -9c dists/stable/main/binary-all/Packages > dists/stable/main/binary-all/Packages.gz
+
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="Lytescope" \
+            -o APT::FTPArchive::Release::Label="Lytescope" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Components="main" \
+            -o APT::FTPArchive::Release::Architectures="all" \
+            release dists/stable > dists/stable/Release
+
+          gpg --batch --yes --default-key "${{ secrets.GPG_KEY_ID }}" \
+            --clearsign -o dists/stable/InRelease dists/stable/Release
+
+          gpg --batch --yes --default-key "${{ secrets.GPG_KEY_ID }}" \
+            -abs -o dists/stable/Release.gpg dists/stable/Release
+
+      - name: Upload .deb to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: lytescope.deb
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy to lytescope.com/apt via SSH
+        run: |
+          rsync -avz --delete -e "ssh -i ~/.ssh/id_ed25519" apt/ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/
