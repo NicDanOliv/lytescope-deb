@@ -1,0 +1,9 @@
+Package: lytescope
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: curl, ca-certificates, python3, iproute2
+Maintainer: Lytescope <support@lytescope.com>
+Description: Lytescope Linux monitoring agent
+ A lightweight Linux monitoring agent that collects server metrics and pushes them to Lytescope.

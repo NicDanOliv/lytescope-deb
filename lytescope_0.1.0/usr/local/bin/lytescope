@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CONFIG_FILE="/etc/lytescope/agent.conf"
+
+if [ -t 1 ]; then
+  GREEN="\033[0;32m"
+  YELLOW="\033[1;33m"
+  RED="\033[0;31m"
+  NC="\033[0m"
+else
+  GREEN=""
+  YELLOW=""
+  RED=""
+  NC=""
+fi
+
+ok(){
+  echo -e "${GREEN}✓${NC} $1"
+}
+
+warn(){
+  echo -e "${YELLOW}!${NC} $1"
+}
+
+fail(){
+  echo -e "${RED}✗${NC} $1"
+  exit 1
+}
+
+load_config(){
+  if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+  fi
+}
+
+save_config(){
+  cat > "$CONFIG_FILE" <<CONFIG
+LYTESCOPE_BASE_URL="$LYTESCOPE_BASE_URL"
+LYTESCOPE_AGENT_UUID="$LYTESCOPE_AGENT_UUID"
+LYTESCOPE_AGENT_TOKEN="$LYTESCOPE_AGENT_TOKEN"
+LYTESCOPE_ENDPOINT="$LYTESCOPE_ENDPOINT"
+LYTESCOPE_AGENT_VERSION="$LYTESCOPE_AGENT_VERSION"
+CONFIG
+
+  chmod 600 "$CONFIG_FILE"
+}
+
+json_value(){
+  python3 -c "import json,sys; print(json.load(sys.stdin).get('$1', ''))"
+}
+
+http_post_json(){
+  URL="$1"
+  BODY="$2"
+  RESPONSE_FILE="$(mktemp)"
+
+  HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X POST "$URL" \
+    -H "Content-Type: application/json" \
+    --data "$BODY" || true)"
+
+  RESPONSE_BODY="$(cat "$RESPONSE_FILE")"
+  rm -f "$RESPONSE_FILE"
+
+  echo "$HTTP_CODE"
+  echo "$RESPONSE_BODY"
+}
+
+link_agent(){
+  SHARE_CODE="${1:-}"
+
+  if [ -z "$SHARE_CODE" ]; then
+    echo "Usage: sudo lytescope link SHARE_CODE"
+    exit 1
+  fi
+
+  load_config
+
+  LYTESCOPE_BASE_URL="${LYTESCOPE_BASE_URL:-https://www.lytescope.com}"
+  LYTESCOPE_AGENT_VERSION="${LYTESCOPE_AGENT_VERSION:-0.1.0}"
+
+  echo "Linking Lytescope..."
+
+  REQUEST_BODY="$(LYTESCOPE_SHARE_CODE="$SHARE_CODE" python3 -c "import json,os; print(json.dumps({'share_code': os.environ['LYTESCOPE_SHARE_CODE']}))")"
+
+  RESPONSE="$(http_post_json "$LYTESCOPE_BASE_URL/api/agent/link" "$REQUEST_BODY")"
+  HTTP_CODE="$(echo "$RESPONSE" | head -n 1)"
+  LINK_RESPONSE="$(echo "$RESPONSE" | tail -n +2)"
+
+  if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -gt 299 ]; then
+    echo "Lytescope link request failed with HTTP $HTTP_CODE."
+    echo "$LINK_RESPONSE"
+    exit 1
+  fi
+
+  LYTESCOPE_AGENT_UUID="$(echo "$LINK_RESPONSE" | json_value agent_uuid)"
+  LYTESCOPE_AGENT_TOKEN="$(echo "$LINK_RESPONSE" | json_value agent_token)"
+  LYTESCOPE_ENDPOINT="$(echo "$LINK_RESPONSE" | json_value metrics_endpoint)"
+
+  if [ -z "$LYTESCOPE_AGENT_UUID" ] || [ -z "$LYTESCOPE_AGENT_TOKEN" ] || [ -z "$LYTESCOPE_ENDPOINT" ]; then
+    echo "Invalid link response from Lytescope."
+    echo "$LINK_RESPONSE"
+    exit 1
+  fi
+
+  save_config
+
+  ok "Lytescope linked successfully"
+}
+
+push_metrics(){
+  load_config
+
+  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] || [ -z "${LYTESCOPE_AGENT_TOKEN:-}" ] || [ -z "${LYTESCOPE_ENDPOINT:-}" ]; then
+    warn "Lytescope is installed but not linked yet"
+    echo "Run: sudo lytescope link SHARE_CODE"
+    exit 0
+  fi
+
+  export LYTESCOPE_AGENT_VERSION
+
+  PAYLOAD="$(python3 /usr/local/lib/lytescope/build_payload.py)"
+  RESPONSE_FILE="$(mktemp)"
+
+  HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X POST "$LYTESCOPE_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    -H "X-Lytescope-Agent: $LYTESCOPE_AGENT_UUID" \
+    -H "Authorization: Bearer $LYTESCOPE_AGENT_TOKEN" \
+    --data "$PAYLOAD" || true)"
+
+  RESPONSE_BODY="$(cat "$RESPONSE_FILE")"
+  rm -f "$RESPONSE_FILE"
+
+  if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -gt 299 ]; then
+    echo "Lytescope metric push failed with HTTP $HTTP_CODE."
+    echo "$RESPONSE_BODY"
+    exit 1
+  fi
+
+  echo "$RESPONSE_BODY"
+}
+
+show_status(){
+  load_config
+
+  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ]; then
+    warn "Lytescope installed but not linked"
+    echo "Run: sudo lytescope link SHARE_CODE"
+    exit 0
+  fi
+
+  ok "Lytescope linked"
+  echo "Agent UUID: $LYTESCOPE_AGENT_UUID"
+  echo "Endpoint: $LYTESCOPE_ENDPOINT"
+}
+
+COMMAND="${1:-push}"
+
+case "$COMMAND" in
+  link)
+    link_agent "${2:-}"
+    ;;
+  push)
+    push_metrics
+    ;;
+  status)
+    show_status
+    ;;
+  *)
+    echo "Unknown command: $COMMAND"
+    echo ""
+    echo "Usage:"
+    echo "  sudo lytescope link SHARE_CODE"
+    echo "  sudo lytescope push"
+    echo "  sudo lytescope status"
+    exit 1
+    ;;
+esac

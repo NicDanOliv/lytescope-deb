@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+set -e
+
+systemctl disable --now lytescope.timer >/dev/null 2>&1 || true
+systemctl stop lytescope.service >/dev/null 2>&1 || true
+
+exit 0

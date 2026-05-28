@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+set -e
+
+chmod 600 /etc/lytescope/agent.conf || true
+chmod +x /usr/local/bin/lytescope || true
+chmod +x /usr/local/lib/lytescope/build_payload.py || true
+
+systemctl daemon-reload || true
+systemctl enable --now lytescope.timer || true
+
+exit 0
