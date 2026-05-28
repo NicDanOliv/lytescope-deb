@@ -91,8 +91,11 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
-          ssh -v -i ~/.ssh/id_ed25519 -o BatchMode=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH OK"
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>&1
+          ssh -v -i ~/.ssh/id_ed25519 -o BatchMode=yes \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "echo SSH OK" \
+            > /tmp/ssh_out.txt 2>&1 || true
+          cat /tmp/ssh_out.txt
 
       - name: Deploy to lytescope.com/apt via SSH
         run: |
