@@ -52,7 +52,7 @@ jobs:
 
       - name: Export public GPG key
         run: |
-          gpg --armor --export "${{ secrets.GPG_KEY_ID }}" > lytescope.gpg
+          gpg --export "${{ secrets.GPG_KEY_ID }}" > lytescope.gpg
 
       - name: Set up APT repo structure
         run: |
