@@ -58,15 +58,14 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
 
+          rm -rf apt
+
           mkdir -p apt/pool/main
           mkdir -p apt/dists/stable/main/binary-all
           mkdir -p apt/dists/stable/main/binary-amd64
 
-          dpkg-scanpackages --arch all pool/main > dists/stable/main/binary-all/Packages
-          gzip -9c dists/stable/main/binary-all/Packages > dists/stable/main/binary-all/Packages.gz
-
-          cp dists/stable/main/binary-all/Packages dists/stable/main/binary-amd64/Packages
-          cp dists/stable/main/binary-all/Packages.gz dists/stable/main/binary-amd64/Packages.gz
+          cp lytescope.deb apt/pool/main/lytescope_${VERSION}_all.deb
+          cp lytescope.gpg apt/lytescope.gpg
 
           echo "apt.lytescope.com" > apt/CNAME
 
@@ -74,6 +73,9 @@ jobs:
 
           dpkg-scanpackages --arch all pool/main > dists/stable/main/binary-all/Packages
           gzip -9c dists/stable/main/binary-all/Packages > dists/stable/main/binary-all/Packages.gz
+
+          cp dists/stable/main/binary-all/Packages dists/stable/main/binary-amd64/Packages
+          cp dists/stable/main/binary-all/Packages.gz dists/stable/main/binary-amd64/Packages.gz
 
           apt-ftparchive \
             -o APT::FTPArchive::Release::Origin="Lytescope" \
