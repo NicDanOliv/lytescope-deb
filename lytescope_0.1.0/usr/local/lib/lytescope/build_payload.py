@@ -1,187 +1,3 @@
-#!/usr/bin/env bash
-
-set -euo pipefail
-
-SHARE_CODE=""
-LYTESCOPE_BASE_URL="http://localhost:8000"
-AGENT_VERSION="0.1.0"
-UNINSTALL_YN="0"
-INSTALL_LOG="/tmp/lytescope-agent-install.log"
-
-if [ -t 1 ]; then
-  GREEN="\033[0;32m"
-  YELLOW="\033[1;33m"
-  RED="\033[0;31m"
-  BLUE="\033[0;34m"
-  BOLD="\033[1m"
-  NC="\033[0m"
-else
-  GREEN=""
-  YELLOW=""
-  RED=""
-  BLUE=""
-  BOLD=""
-  NC=""
-fi
-
-CURRENT_STEP=0
-CURRENT_STEP_TITLE=""
-
-step(){
-  CURRENT_STEP=$((CURRENT_STEP + 1))
-  CURRENT_STEP_TITLE="$1"
-  echo ""
-  echo -e "${BLUE}Step ${CURRENT_STEP}${NC} ${CURRENT_STEP_TITLE}"
-}
-
-ok(){
-  echo -e "${GREEN}Step ${CURRENT_STEP} ✓${NC} $1"
-}
-
-warn(){
-  echo -e "${YELLOW}Step ${CURRENT_STEP} !${NC} $1"
-}
-
-fail(){
-  if [ "${CURRENT_STEP:-0}" -gt 0 ]; then
-    echo -e "${RED}Step ${CURRENT_STEP} ✗${NC} $1"
-  else
-    echo -e "${RED}✗${NC} $1"
-  fi
-
-  exit 1
-}
-
-header(){
-  echo ""
-  echo -e "${BOLD}Lytescope Agent Installer${NC}"
-  echo "-------------------------"
-}
-
-usage(){
-  echo "Usage:"
-  echo "  curl -fsSL http://localhost:8000/agent/install.sh | sudo bash"
-  echo "  curl -fsSL http://localhost:8000/agent/install.sh | sudo bash -s -- --share-code=YOUR_SHARE_CODE"
-  echo "  curl -fsSL http://localhost:8000/agent/install.sh | sudo bash -s -- --endpoint=https://your-domain.com"
-  echo "  curl -fsSL http://localhost:8000/agent/install.sh | sudo bash -s -- --uninstall"
-}
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --share-code=*)
-      SHARE_CODE="${1#*=}"
-      ;;
-    --link-code=*)
-      SHARE_CODE="${1#*=}"
-      ;;
-    --endpoint=*)
-      LYTESCOPE_BASE_URL="${1#*=}"
-      ;;
-    --uninstall)
-      UNINSTALL_YN="1"
-      ;;
-    --help)
-      usage
-      exit 0
-      ;;
-    *)
-      fail "Unknown option: $1"
-      ;;
-  esac
-
-  shift
-done
-
-header
-
-step "Checking permissions"
-
-if [ "$(id -u)" -ne 0 ]; then
-  fail "Please run this installer with sudo."
-fi
-
-ok "Running as root"
-
-if [ "$UNINSTALL_YN" = "1" ]; then
-  step "Uninstalling Lytescope Agent"
-
-  systemctl disable --now lytescope-agent.timer >/dev/null 2>&1 || true
-  systemctl stop lytescope-agent.service >/dev/null 2>&1 || true
-
-  rm -f /etc/systemd/system/lytescope-agent.timer
-  rm -f /etc/systemd/system/lytescope-agent.service
-  rm -f /usr/local/bin/lytescope-agent
-  rm -rf /usr/local/lib/lytescope-agent
-  rm -rf /etc/lytescope
-
-  systemctl daemon-reload >/dev/null 2>&1 || true
-
-  ok "Lytescope Agent uninstalled"
-  exit 0
-fi
-
-step "Installing system dependencies"
-
-: > "$INSTALL_LOG"
-
-if apt-get update >> "$INSTALL_LOG" 2>&1; then
-  ok "Package list updated"
-else
-  fail "Could not update package list. Check $INSTALL_LOG"
-fi
-
-if apt-get install -y curl ca-certificates python3 iproute2 >> "$INSTALL_LOG" 2>&1; then
-  ok "Dependencies installed"
-else
-  fail "Could not install dependencies. Check $INSTALL_LOG"
-fi
-
-step "Creating directories"
-
-mkdir -p /etc/lytescope
-mkdir -p /usr/local/lib/lytescope-agent
-
-ok "Directories created"
-
-step "Writing agent config"
-
-if [ -f /etc/lytescope/agent.conf ]; then
-  # Preserve existing linked agent credentials on reinstall.
-  # shellcheck disable=SC1091
-  source /etc/lytescope/agent.conf
-
-  LYTESCOPE_BASE_URL="${LYTESCOPE_BASE_URL:-http://localhost:8000}"
-  LYTESCOPE_AGENT_UUID="${LYTESCOPE_AGENT_UUID:-}"
-  LYTESCOPE_AGENT_TOKEN="${LYTESCOPE_AGENT_TOKEN:-}"
-  LYTESCOPE_ENDPOINT="${LYTESCOPE_ENDPOINT:-}"
-  LYTESCOPE_AGENT_VERSION="$AGENT_VERSION"
-
-  cat > /etc/lytescope/agent.conf <<EOF
-LYTESCOPE_BASE_URL="$LYTESCOPE_BASE_URL"
-LYTESCOPE_AGENT_UUID="$LYTESCOPE_AGENT_UUID"
-LYTESCOPE_AGENT_TOKEN="$LYTESCOPE_AGENT_TOKEN"
-LYTESCOPE_ENDPOINT="$LYTESCOPE_ENDPOINT"
-LYTESCOPE_AGENT_VERSION="$LYTESCOPE_AGENT_VERSION"
-EOF
-
-  ok "Existing config preserved"
-else
-  cat > /etc/lytescope/agent.conf <<EOF
-LYTESCOPE_BASE_URL="$LYTESCOPE_BASE_URL"
-LYTESCOPE_AGENT_UUID=""
-LYTESCOPE_AGENT_TOKEN=""
-LYTESCOPE_ENDPOINT=""
-LYTESCOPE_AGENT_VERSION="$AGENT_VERSION"
-EOF
-
-  ok "Config file created"
-fi
-
-chmod 600 /etc/lytescope/agent.conf
-
-step "Installing metric collector"
-
-cat > /usr/local/lib/lytescope-agent/build_payload.py <<'EOF'
 #!/usr/bin/env python3
 
 import json
@@ -191,17 +7,20 @@ import socket
 import subprocess
 import time
 
+
 def safe_float(value):
   try:
     return float(value)
   except Exception:
     return None
 
+
 def safe_int(value):
   try:
     return int(float(value))
   except Exception:
     return None
+
 
 def run_command(command):
   result = subprocess.run(
@@ -215,12 +34,14 @@ def run_command(command):
 
   return result.stdout.strip()
 
+
 def read_file(path):
   try:
     with open(path, 'r') as file:
       return file.read()
   except Exception:
     return ''
+
 
 def get_os_info():
   data = read_file('/etc/os-release')
@@ -239,6 +60,7 @@ def get_os_info():
     'architecture': platform.machine(),
   }
 
+
 def get_threads():
   count = os.cpu_count()
 
@@ -249,6 +71,7 @@ def get_threads():
     'threads': count,
   }
 
+
 def get_uptime_seconds():
   values = read_file('/proc/uptime').split()
 
@@ -256,6 +79,7 @@ def get_uptime_seconds():
     return None
 
   return safe_int(values[0])
+
 
 def format_uptime(seconds):
   seconds = safe_int(seconds)
@@ -282,6 +106,7 @@ def format_uptime(seconds):
 
   return ", ".join(parts)
 
+
 def get_load_average():
   values = read_file('/proc/loadavg').split()
 
@@ -293,6 +118,7 @@ def get_load_average():
     'cpu_load_5m': safe_float(values[1]),
     'cpu_load_15m': safe_float(values[2]),
   }
+
 
 def read_cpu_stats():
   for line in read_file('/proc/stat').splitlines():
@@ -313,6 +139,7 @@ def read_cpu_stats():
     }
 
   return None
+
 
 def get_cpu_usage():
   first = read_cpu_stats()
@@ -339,6 +166,7 @@ def get_cpu_usage():
     'cpu_iowait_perc': round((iowait_delta / total_delta) * 100, 2),
   }
 
+
 def get_memory():
   values = {}
 
@@ -363,6 +191,7 @@ def get_memory():
     'memory_free': round(available_kb / 1024, 2),
     'memory_used': round(used_kb / 1024, 2),
   }
+
 
 def get_disk():
   output = run_command('df -P -B1 /')
@@ -389,6 +218,7 @@ def get_disk():
     'disk_used': round(used_bytes / 1024 / 1024, 2),
   }
 
+
 def get_default_route():
   output = run_command('ip route get 1.1.1.1')
   parts = output.split()
@@ -406,6 +236,7 @@ def get_default_route():
       route['local_ip'] = parts[index + 1]
 
   return route
+
 
 def get_network():
   route = get_default_route()
@@ -441,6 +272,7 @@ def get_network():
 
   return result
 
+
 def get_public_ip():
   output = run_command('curl -fsS --max-time 3 https://api.ipify.org')
 
@@ -448,6 +280,7 @@ def get_public_ip():
     return None
 
   return output
+
 
 def count_tcp_connections_from_file(path):
   count = 0
@@ -466,10 +299,12 @@ def count_tcp_connections_from_file(path):
 
   return count
 
+
 def get_connections():
   return {
     'connections': count_tcp_connections_from_file('/proc/net/tcp') + count_tcp_connections_from_file('/proc/net/tcp6'),
   }
+
 
 payload = {
   'agent_version': os.environ.get('LYTESCOPE_AGENT_VERSION', '0.1.0'),
