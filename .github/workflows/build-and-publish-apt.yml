@@ -60,9 +60,13 @@ jobs:
 
           mkdir -p apt/pool/main
           mkdir -p apt/dists/stable/main/binary-all
+          mkdir -p apt/dists/stable/main/binary-amd64
 
-          cp lytescope.deb apt/pool/main/lytescope_${VERSION}_all.deb
-          cp lytescope.gpg apt/lytescope.gpg
+          dpkg-scanpackages --arch all pool/main > dists/stable/main/binary-all/Packages
+          gzip -9c dists/stable/main/binary-all/Packages > dists/stable/main/binary-all/Packages.gz
+
+          cp dists/stable/main/binary-all/Packages dists/stable/main/binary-amd64/Packages
+          cp dists/stable/main/binary-all/Packages.gz dists/stable/main/binary-amd64/Packages.gz
 
           echo "apt.lytescope.com" > apt/CNAME
 
@@ -77,7 +81,7 @@ jobs:
             -o APT::FTPArchive::Release::Suite="stable" \
             -o APT::FTPArchive::Release::Codename="stable" \
             -o APT::FTPArchive::Release::Components="main" \
-            -o APT::FTPArchive::Release::Architectures="all" \
+            -o APT::FTPArchive::Release::Architectures="amd64 all" \
             release dists/stable > dists/stable/Release
 
           gpg --batch --yes --pinentry-mode loopback \
