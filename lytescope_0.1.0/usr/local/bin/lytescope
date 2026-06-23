@@ -417,7 +417,7 @@ push_metrics(){
 show_status(){
   load_config
 
-  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] \ || [ -z "${LYTESCOPE_AGENT_SIGNING_SECRET:-}" ]; then
+  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] || [ -z "${LYTESCOPE_AGENT_SIGNING_SECRET:-}" ]; then
     warn "Lytescope is installed but not linked"
     echo "Run: sudo lytescope link SHARE_CODE"
     exit 0
@@ -426,7 +426,8 @@ show_status(){
   ok "Lytescope linked"
   echo "Agent UUID: $LYTESCOPE_AGENT_UUID"
 
-  if [ "$CACHE_ACTIVE_YN" != "0" ] && [ "$CACHE_ACTIVE_YN" != "1" ]; then
+  if load_fresh_status_cache; then
+    if [ "$CACHE_ACTIVE_YN" = "1" ]; then
       echo "Cached monitoring status: active"
     else
       echo "Cached monitoring status: disabled"
