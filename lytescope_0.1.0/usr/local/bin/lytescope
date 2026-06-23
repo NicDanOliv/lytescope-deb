@@ -39,8 +39,7 @@ load_config(){
 
   LYTESCOPE_AGENT_SIGNATURE_VERSION="${LYTESCOPE_AGENT_SIGNATURE_VERSION:-v1}"
 
-  if [ -z "${LYTESCOPE_STATUS_ENDPOINT:-}" ]
-    && [ -n "${LYTESCOPE_BASE_URL:-}" ]; then
+  if [ -z "${LYTESCOPE_STATUS_ENDPOINT:-}" ] && [ -n "${LYTESCOPE_BASE_URL:-}" ]; then
     LYTESCOPE_STATUS_ENDPOINT="$LYTESCOPE_BASE_URL/api/agent/status"
   fi
 }
@@ -213,8 +212,7 @@ load_fresh_status_cache(){
   CACHE_EXPIRES_AT="$(sed -n 's/^LYTESCOPE_STATUS_CACHE_EXPIRES_AT="\([0-9][0-9]*\)"$/\1/p' "$STATUS_CACHE_FILE")"
   CURRENT_TIME="$(date +%s)"
 
-  if [ "$CACHE_ACTIVE_YN" != "0" ]
-    && [ "$CACHE_ACTIVE_YN" != "1" ]; then
+  if [ "$CACHE_ACTIVE_YN" != "0" ] && [ "$CACHE_ACTIVE_YN" != "1" ]; then
     return 1
   fi
 
@@ -235,8 +233,7 @@ fetch_live_monitoring_status(){
   STATUS_RESPONSE="$(echo "$RESPONSE" | tail -n +2)"
   LIVE_MONITOR_ACTIVE_YN="$(echo "$STATUS_RESPONSE" | json_boolean_value monitor_active_yn)"
 
-  if [ "$LIVE_MONITOR_ACTIVE_YN" = "1" ]
-    || [ "$LIVE_MONITOR_ACTIVE_YN" = "0" ]; then
+  if [ "$LIVE_MONITOR_ACTIVE_YN" = "1" ] || [ "$LIVE_MONITOR_ACTIVE_YN" = "0" ]; then
     return 0
   fi
 
@@ -420,8 +417,7 @@ push_metrics(){
 show_status(){
   load_config
 
-  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] \
-    || [ -z "${LYTESCOPE_AGENT_SIGNING_SECRET:-}" ]; then
+  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] \ || [ -z "${LYTESCOPE_AGENT_SIGNING_SECRET:-}" ]; then
     warn "Lytescope is installed but not linked"
     echo "Run: sudo lytescope link SHARE_CODE"
     exit 0
@@ -430,8 +426,7 @@ show_status(){
   ok "Lytescope linked"
   echo "Agent UUID: $LYTESCOPE_AGENT_UUID"
 
-  if load_fresh_status_cache; then
-    if [ "$CACHE_ACTIVE_YN" = "1" ]; then
+  if [ "$CACHE_ACTIVE_YN" != "0" ] && [ "$CACHE_ACTIVE_YN" != "1" ]; then
       echo "Cached monitoring status: active"
     else
       echo "Cached monitoring status: disabled"
