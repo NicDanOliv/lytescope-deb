@@ -3,6 +3,9 @@
 set -euo pipefail
 
 CONFIG_FILE="/etc/lytescope/agent.conf"
+STATE_DIR="/var/lib/lytescope"
+STATUS_CACHE_FILE="$STATE_DIR/monitoring_status_cache"
+STATUS_CACHE_SECONDS=300
 
 if [ -t 1 ]; then
   GREEN="\033[0;32m"
@@ -33,14 +36,23 @@ load_config(){
   if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
   fi
+
+  LYTESCOPE_AGENT_SIGNATURE_VERSION="${LYTESCOPE_AGENT_SIGNATURE_VERSION:-v1}"
+
+  if [ -z "${LYTESCOPE_STATUS_ENDPOINT:-}" ]
+    && [ -n "${LYTESCOPE_BASE_URL:-}" ]; then
+    LYTESCOPE_STATUS_ENDPOINT="$LYTESCOPE_BASE_URL/api/agent/status"
+  fi
 }
 
 save_config(){
   cat > "$CONFIG_FILE" <<CONFIG
 LYTESCOPE_BASE_URL="$LYTESCOPE_BASE_URL"
 LYTESCOPE_AGENT_UUID="$LYTESCOPE_AGENT_UUID"
-LYTESCOPE_AGENT_TOKEN="$LYTESCOPE_AGENT_TOKEN"
+LYTESCOPE_AGENT_SIGNING_SECRET="$LYTESCOPE_AGENT_SIGNING_SECRET"
 LYTESCOPE_ENDPOINT="$LYTESCOPE_ENDPOINT"
+LYTESCOPE_STATUS_ENDPOINT="$LYTESCOPE_STATUS_ENDPOINT"
+LYTESCOPE_AGENT_SIGNATURE_VERSION="$LYTESCOPE_AGENT_SIGNATURE_VERSION"
 LYTESCOPE_AGENT_VERSION="$LYTESCOPE_AGENT_VERSION"
 CONFIG
 
@@ -48,7 +60,90 @@ CONFIG
 }
 
 json_value(){
-  python3 -c "import json,sys; print(json.load(sys.stdin).get('$1', ''))"
+  python3 -c "
+import json
+import sys
+
+value = json.load(sys.stdin).get('$1', '')
+print('' if value is None else value)
+"
+}
+
+json_boolean_value(){
+  python3 -c "
+import json
+import sys
+
+value = json.load(sys.stdin).get('$1')
+
+if value is True:
+    print('1')
+elif value is False:
+    print('0')
+"
+}
+
+machine_fingerprint_hash(){
+  if [ ! -r "/etc/machine-id" ]; then
+    return 1
+  fi
+
+  tr -d '\n' < "/etc/machine-id" | sha256sum | awk '{print $1}'
+}
+
+request_path_and_query(){
+  REQUEST_URL="$1"
+
+  python3 -c "
+import sys
+from urllib.parse import urlsplit
+
+url = urlsplit(sys.argv[1])
+path = url.path or '/'
+
+if url.query:
+    path += '?' + url.query
+
+print(path)
+" "$REQUEST_URL"
+}
+
+sign_agent_request(){
+  REQUEST_METHOD="$1"
+  REQUEST_URL="$2"
+  REQUEST_BODY="${3:-}"
+
+  REQUEST_TIMESTAMP="$(date +%s)"
+  REQUEST_PATH_AND_QUERY="$(request_path_and_query "$REQUEST_URL")"
+  REQUEST_BODY_HASH="$(printf '%s' "$REQUEST_BODY" | sha256sum | awk '{print $1}')"
+
+  REQUEST_SIGNATURE="$(
+    LYTESCOPE_SIGNING_SECRET="$LYTESCOPE_AGENT_SIGNING_SECRET" \
+    LYTESCOPE_REQUEST_TIMESTAMP="$REQUEST_TIMESTAMP" \
+    LYTESCOPE_REQUEST_METHOD="$REQUEST_METHOD" \
+    LYTESCOPE_REQUEST_PATH="$REQUEST_PATH_AND_QUERY" \
+    LYTESCOPE_REQUEST_BODY_HASH="$REQUEST_BODY_HASH" \
+    python3 -c "
+import hashlib
+import hmac
+import os
+
+canonical_request = '\n'.join([
+    os.environ['LYTESCOPE_REQUEST_TIMESTAMP'],
+    os.environ['LYTESCOPE_REQUEST_METHOD'],
+    os.environ['LYTESCOPE_REQUEST_PATH'],
+    os.environ['LYTESCOPE_REQUEST_BODY_HASH'],
+])
+
+signature = hmac.new(
+    os.environ['LYTESCOPE_SIGNING_SECRET'].encode(),
+    canonical_request.encode(),
+    hashlib.sha256,
+).hexdigest()
+
+print(signature)
+"
+  )"
 }
 
 http_post_json(){
@@ -57,6 +152,8 @@ http_post_json(){
   RESPONSE_FILE="$(mktemp)"
 
   HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X POST "$URL" \
+    --connect-timeout 5 \
+    --max-time 15 \
     -H "Content-Type: application/json" \
     --data "$BODY" || true)"
 
@@ -67,22 +164,166 @@ http_post_json(){
   echo "$RESPONSE_BODY"
 }
 
+http_get_agent_status(){
+  sign_agent_request "GET" "$LYTESCOPE_STATUS_ENDPOINT" ""
+
+  RESPONSE_FILE="$(mktemp)"
+
+  HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X GET "$LYTESCOPE_STATUS_ENDPOINT" \
+    --connect-timeout 5 \
+    --max-time 15 \
+    -H "Accept: application/json" \
+    -H "X-Lytescope-Agent: $LYTESCOPE_AGENT_UUID" \
+    -H "X-Lytescope-Timestamp: $REQUEST_TIMESTAMP" \
+    -H "X-Lytescope-Signature: $REQUEST_SIGNATURE" \
+    -H "X-Lytescope-Signature-Version: $LYTESCOPE_AGENT_SIGNATURE_VERSION" || true)"
+
+  RESPONSE_BODY="$(cat "$RESPONSE_FILE")"
+  rm -f "$RESPONSE_FILE"
+
+  echo "$HTTP_CODE"
+  echo "$RESPONSE_BODY"
+}
+
+write_status_cache(){
+  MONITOR_ACTIVE_YN="$1"
+  CACHE_EXPIRES_AT="$(( $(date +%s) + STATUS_CACHE_SECONDS ))"
+
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+
+  (
+    umask 077
+
+    cat > "$STATUS_CACHE_FILE" <<CACHE
+LYTESCOPE_MONITOR_ACTIVE_YN="$MONITOR_ACTIVE_YN"
+LYTESCOPE_STATUS_CACHE_EXPIRES_AT="$CACHE_EXPIRES_AT"
+CACHE
+  )
+
+  chmod 600 "$STATUS_CACHE_FILE"
+}
+
+load_fresh_status_cache(){
+  if [ ! -f "$STATUS_CACHE_FILE" ]; then
+    return 1
+  fi
+
+  CACHE_ACTIVE_YN="$(sed -n 's/^LYTESCOPE_MONITOR_ACTIVE_YN="\([01]\)"$/\1/p' "$STATUS_CACHE_FILE")"
+  CACHE_EXPIRES_AT="$(sed -n 's/^LYTESCOPE_STATUS_CACHE_EXPIRES_AT="\([0-9][0-9]*\)"$/\1/p' "$STATUS_CACHE_FILE")"
+  CURRENT_TIME="$(date +%s)"
+
+  if [ "$CACHE_ACTIVE_YN" != "0" ]
+    && [ "$CACHE_ACTIVE_YN" != "1" ]; then
+    return 1
+  fi
+
+  if ! [[ "$CACHE_EXPIRES_AT" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  if [ "$CURRENT_TIME" -ge "$CACHE_EXPIRES_AT" ]; then
+    return 1
+  fi
+
+  return 0
+}
+
+fetch_live_monitoring_status(){
+  RESPONSE="$(http_get_agent_status)"
+  HTTP_CODE="$(echo "$RESPONSE" | head -n 1)"
+  STATUS_RESPONSE="$(echo "$RESPONSE" | tail -n +2)"
+  LIVE_MONITOR_ACTIVE_YN="$(echo "$STATUS_RESPONSE" | json_boolean_value monitor_active_yn)"
+
+  if [ "$LIVE_MONITOR_ACTIVE_YN" = "1" ]
+    || [ "$LIVE_MONITOR_ACTIVE_YN" = "0" ]; then
+    return 0
+  fi
+
+  warn "Could not confirm monitoring status (HTTP $HTTP_CODE)."
+  echo "$STATUS_RESPONSE"
+  return 1
+}
+
+monitoring_active_for_scheduled_collection(){
+  if load_fresh_status_cache; then
+    if [ "$CACHE_ACTIVE_YN" = "1" ]; then
+      return 0
+    fi
+
+    warn "Monitoring is disabled. Scheduled collection skipped."
+    return 1
+  fi
+
+  if ! fetch_live_monitoring_status; then
+    warn "Scheduled collection skipped because server status could not be confirmed."
+    return 1
+  fi
+
+  write_status_cache "$LIVE_MONITOR_ACTIVE_YN"
+
+  if [ "$LIVE_MONITOR_ACTIVE_YN" = "1" ]; then
+    return 0
+  fi
+
+  warn "Monitoring is disabled. Scheduled collection skipped."
+  return 1
+}
+
+monitoring_active_for_manual_push(){
+  if ! fetch_live_monitoring_status; then
+    warn "Manual push cancelled because server status could not be confirmed."
+    return 1
+  fi
+
+  write_status_cache "$LIVE_MONITOR_ACTIVE_YN"
+
+  if [ "$LIVE_MONITOR_ACTIVE_YN" = "1" ]; then
+    return 0
+  fi
+
+  warn "Monitoring is disabled. Manual push cancelled."
+  return 1
+}
+
 link_agent(){
   SHARE_CODE="${1:-}"
+  BASE_URL="${2:-https://www.lytescope.com}"
 
   if [ -z "$SHARE_CODE" ]; then
-    echo "Usage: sudo lytescope link SHARE_CODE"
+    echo "Usage:"
+    echo "  sudo lytescope link SHARE_CODE"
     exit 1
   fi
 
   load_config
 
-  LYTESCOPE_BASE_URL="${LYTESCOPE_BASE_URL:-https://www.lytescope.com}"
-  LYTESCOPE_AGENT_VERSION="${LYTESCOPE_AGENT_VERSION:-0.1.0}"
+  LYTESCOPE_BASE_URL="$BASE_URL"
+  LYTESCOPE_AGENT_VERSION="${LYTESCOPE_AGENT_VERSION:-0.1.13}"
+
+  if ! MACHINE_FINGERPRINT_HASH="$(machine_fingerprint_hash)"; then
+    fail "Could not create a machine fingerprint."
+  fi
+
+  if [ -z "$MACHINE_FINGERPRINT_HASH" ]; then
+    fail "Could not create a machine fingerprint."
+  fi
 
   echo "Linking Lytescope..."
 
-  REQUEST_BODY="$(LYTESCOPE_SHARE_CODE="$SHARE_CODE" python3 -c "import json,os; print(json.dumps({'share_code': os.environ['LYTESCOPE_SHARE_CODE']}))")"
+  REQUEST_BODY="$(
+    LYTESCOPE_SHARE_CODE="$SHARE_CODE" \
+    LYTESCOPE_MACHINE_FINGERPRINT_HASH="$MACHINE_FINGERPRINT_HASH" \
+    python3 -c "
+import json
+import os
+
+print(json.dumps({
+    'share_code': os.environ['LYTESCOPE_SHARE_CODE'],
+    'machine_fingerprint_hash': os.environ['LYTESCOPE_MACHINE_FINGERPRINT_HASH'],
+}))
+"
+  )"
 
   RESPONSE="$(http_post_json "$LYTESCOPE_BASE_URL/api/agent/link" "$REQUEST_BODY")"
   HTTP_CODE="$(echo "$RESPONSE" | head -n 1)"
@@ -95,38 +336,73 @@ link_agent(){
   fi
 
   LYTESCOPE_AGENT_UUID="$(echo "$LINK_RESPONSE" | json_value agent_uuid)"
-  LYTESCOPE_AGENT_TOKEN="$(echo "$LINK_RESPONSE" | json_value agent_token)"
+  LYTESCOPE_AGENT_SIGNING_SECRET="$(echo "$LINK_RESPONSE" | json_value agent_signing_secret)"
   LYTESCOPE_ENDPOINT="$(echo "$LINK_RESPONSE" | json_value metrics_endpoint)"
+  LYTESCOPE_STATUS_ENDPOINT="$(echo "$LINK_RESPONSE" | json_value status_endpoint)"
+  LYTESCOPE_AGENT_SIGNATURE_VERSION="$(echo "$LINK_RESPONSE" | json_value agent_signature_version)"
 
-  if [ -z "$LYTESCOPE_AGENT_UUID" ] || [ -z "$LYTESCOPE_AGENT_TOKEN" ] || [ -z "$LYTESCOPE_ENDPOINT" ]; then
+  if [ -z "$LYTESCOPE_AGENT_UUID" ] \
+    || [ -z "$LYTESCOPE_AGENT_SIGNING_SECRET" ] \
+    || [ -z "$LYTESCOPE_ENDPOINT" ] \
+    || [ -z "$LYTESCOPE_STATUS_ENDPOINT" ] \
+    || [ -z "$LYTESCOPE_AGENT_SIGNATURE_VERSION" ]; then
     echo "Invalid link response from Lytescope."
     echo "$LINK_RESPONSE"
     exit 1
   fi
 
+  rm -f "$STATUS_CACHE_FILE"
   save_config
 
   ok "Lytescope linked successfully"
+  echo "Sending initial metrics..."
+
+  if push_metrics "live"; then
+    ok "Initial metrics sent"
+  else
+    warn "Initial metrics could not be sent. The agent is still linked and will retry on its next scheduled collection."
+  fi
 }
 
 push_metrics(){
+  PUSH_MODE="${1:-live}"
+
   load_config
 
-  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] || [ -z "${LYTESCOPE_AGENT_TOKEN:-}" ] || [ -z "${LYTESCOPE_ENDPOINT:-}" ]; then
+  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] \
+    || [ -z "${LYTESCOPE_AGENT_SIGNING_SECRET:-}" ] \
+    || [ -z "${LYTESCOPE_ENDPOINT:-}" ] \
+    || [ -z "${LYTESCOPE_STATUS_ENDPOINT:-}" ]; then
     warn "Lytescope is installed but not linked yet"
     echo "Run: sudo lytescope link SHARE_CODE"
-    exit 0
+    return 1
+  fi
+
+  if [ "$PUSH_MODE" = "scheduled" ]; then
+    if ! monitoring_active_for_scheduled_collection; then
+      return 0
+    fi
+  else
+    if ! monitoring_active_for_manual_push; then
+      return 1
+    fi
   fi
 
   export LYTESCOPE_AGENT_VERSION
 
   PAYLOAD="$(python3 /usr/local/lib/lytescope/build_payload.py)"
+  sign_agent_request "POST" "$LYTESCOPE_ENDPOINT" "$PAYLOAD"
+
   RESPONSE_FILE="$(mktemp)"
 
   HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X POST "$LYTESCOPE_ENDPOINT" \
+    --connect-timeout 5 \
+    --max-time 20 \
     -H "Content-Type: application/json" \
     -H "X-Lytescope-Agent: $LYTESCOPE_AGENT_UUID" \
-    -H "Authorization: Bearer $LYTESCOPE_AGENT_TOKEN" \
+    -H "X-Lytescope-Timestamp: $REQUEST_TIMESTAMP" \
+    -H "X-Lytescope-Signature: $REQUEST_SIGNATURE" \
+    -H "X-Lytescope-Signature-Version: $LYTESCOPE_AGENT_SIGNATURE_VERSION" \
     --data "$PAYLOAD" || true)"
 
   RESPONSE_BODY="$(cat "$RESPONSE_FILE")"
@@ -135,7 +411,7 @@ push_metrics(){
   if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -gt 299 ]; then
     echo "Lytescope metric push failed with HTTP $HTTP_CODE."
     echo "$RESPONSE_BODY"
-    exit 1
+    return 1
   fi
 
   echo "$RESPONSE_BODY"
@@ -144,25 +420,41 @@ push_metrics(){
 show_status(){
   load_config
 
-  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ]; then
-    warn "Lytescope installed but not linked"
+  if [ -z "${LYTESCOPE_AGENT_UUID:-}" ] \
+    || [ -z "${LYTESCOPE_AGENT_SIGNING_SECRET:-}" ]; then
+    warn "Lytescope is installed but not linked"
     echo "Run: sudo lytescope link SHARE_CODE"
     exit 0
   fi
 
   ok "Lytescope linked"
   echo "Agent UUID: $LYTESCOPE_AGENT_UUID"
-  echo "Endpoint: $LYTESCOPE_ENDPOINT"
+
+  if load_fresh_status_cache; then
+    if [ "$CACHE_ACTIVE_YN" = "1" ]; then
+      echo "Cached monitoring status: active"
+    else
+      echo "Cached monitoring status: disabled"
+    fi
+  else
+    echo "Cached monitoring status: unavailable or expired"
+  fi
 }
 
-COMMAND="${1:-push}"
+COMMAND="${1:-collect}"
 
 case "$COMMAND" in
   link)
-    link_agent "${2:-}"
+    link_agent "${2:-}" "https://www.lytescope.com"
+    ;;
+  localhost-link)
+    link_agent "${2:-}" "http://127.0.0.1:8000"
+    ;;
+  collect)
+    push_metrics "scheduled"
     ;;
   push)
-    push_metrics
+    push_metrics "live"
     ;;
   status)
     show_status
@@ -172,6 +464,7 @@ case "$COMMAND" in
     echo ""
     echo "Usage:"
     echo "  sudo lytescope link SHARE_CODE"
+    echo "  sudo lytescope collect"
     echo "  sudo lytescope push"
     echo "  sudo lytescope status"
     exit 1

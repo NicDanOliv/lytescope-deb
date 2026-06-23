@@ -6,7 +6,11 @@ import platform
 import socket
 import subprocess
 import time
+import tempfile
 
+INVENTORY_CACHE_DIRECTORY = '/var/lib/lytescope'
+INVENTORY_CACHE_FILE = INVENTORY_CACHE_DIRECTORY + '/inventory_cache.json'
+PUBLIC_IP_CACHE_SECONDS = 900
 
 def safe_float(value):
   try:
@@ -281,6 +285,85 @@ def get_public_ip():
 
   return output
 
+def load_inventory_cache():
+  try:
+    with open(INVENTORY_CACHE_FILE, 'r') as file:
+      cache = json.load(file)
+
+    if isinstance(cache, dict):
+      return cache
+  except Exception:
+    pass
+
+  return {}
+
+
+def save_inventory_cache(cache):
+  temporary_path = None
+
+  try:
+    os.makedirs(INVENTORY_CACHE_DIRECTORY, mode=0o700, exist_ok=True)
+    os.chmod(INVENTORY_CACHE_DIRECTORY, 0o700)
+
+    file_descriptor, temporary_path = tempfile.mkstemp(
+      prefix='inventory_cache.',
+      dir=INVENTORY_CACHE_DIRECTORY,
+    )
+
+    with os.fdopen(file_descriptor, 'w') as file:
+      json.dump(cache, file, separators=(',', ':'))
+
+    os.chmod(temporary_path, 0o600)
+    os.replace(temporary_path, INVENTORY_CACHE_FILE)
+  except Exception:
+    if temporary_path and os.path.exists(temporary_path):
+      os.remove(temporary_path)
+
+
+def get_cached_inventory():
+  cache = load_inventory_cache()
+  inventory = {}
+  cache_changed = False
+
+  static_inventory = cache.get('static_inventory')
+
+  if not isinstance(static_inventory, dict):
+    static_inventory = {
+      'hostname': socket.gethostname(),
+    }
+
+    static_inventory.update(get_os_info())
+    static_inventory.update(get_threads())
+
+    cache['static_inventory'] = static_inventory
+    cache['static_inventory_updated_at'] = int(time.time())
+    cache_changed = True
+
+  inventory.update(static_inventory)
+
+  cached_public_ip = cache.get('public_ip')
+  public_ip_updated_at = cache.get('public_ip_updated_at')
+  public_ip_fresh_yn = (
+    isinstance(public_ip_updated_at, (int, float))
+    and (time.time() - public_ip_updated_at) < PUBLIC_IP_CACHE_SECONDS
+  )
+
+  if not cached_public_ip or not public_ip_fresh_yn:
+    public_ip = get_public_ip()
+
+    if public_ip:
+      cached_public_ip = public_ip
+      cache['public_ip'] = public_ip
+      cache['public_ip_updated_at'] = int(time.time())
+      cache_changed = True
+
+  if cached_public_ip:
+    inventory['public_ip'] = cached_public_ip
+
+  if cache_changed:
+    save_inventory_cache(cache)
+
+  return inventory
 
 def count_tcp_connections_from_file(path):
   count = 0
@@ -308,24 +391,17 @@ def get_connections():
 
 payload = {
   'agent_version': os.environ.get('LYTESCOPE_AGENT_VERSION', '0.1.0'),
-  'hostname': socket.gethostname(),
   'sampled_at': int(time.time()),
   'server_time': time.strftime('%Y-%m-%d %H:%M:%S'),
 }
 
-payload.update(get_os_info())
-payload.update(get_threads())
+payload.update(get_cached_inventory())
 payload.update(get_load_average())
 payload.update(get_cpu_usage())
 payload.update(get_memory())
 payload.update(get_disk())
 payload.update(get_network())
 payload.update(get_connections())
-
-public_ip = get_public_ip()
-
-if public_ip:
-  payload['public_ip'] = public_ip
 
 uptime_seconds = get_uptime_seconds()
 
