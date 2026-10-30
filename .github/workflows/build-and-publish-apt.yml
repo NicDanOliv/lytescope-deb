@@ -34,10 +34,6 @@ jobs:
         run: |
           sed -i "s/^Version:.*/Version: ${{ steps.version.outputs.VERSION }}/" lytescope_0.1.0/DEBIAN/control
 
-      - name: Update version in agent config
-        run: |
-          sed -i "s/^LYTESCOPE_AGENT_VERSION=.*/LYTESCOPE_AGENT_VERSION=\"${{ steps.version.outputs.VERSION }}\"/" lytescope_0.1.0/etc/lytescope/agent.conf
-
       - name: Build .deb
         run: |
           chmod +x build.sh
@@ -54,11 +50,44 @@ jobs:
         run: |
           gpg --export "${{ secrets.GPG_KEY_ID }}" > lytescope.gpg
 
+      - name: Restore previously released packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p apt/pool/main
+
+          RESTORE_DIR="$(mktemp -d)"
+          trap 'rm -rf -- "$RESTORE_DIR"' EXIT
+
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select(.draft == false) | .assets[] | select(.name == "lytescope.deb") | .id' \
+            > "$RESTORE_DIR/asset-ids"
+
+          while IFS= read -r ASSET_ID; do
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+              > "$RESTORE_DIR/package.deb"
+
+            PACKAGE="$(dpkg-deb --field "$RESTORE_DIR/package.deb" Package)"
+            VERSION="$(dpkg-deb --field "$RESTORE_DIR/package.deb" Version)"
+            ARCH="$(dpkg-deb --field "$RESTORE_DIR/package.deb" Architecture)"
+
+            if [ "$PACKAGE" != "lytescope" ] || [ "$ARCH" != "all" ]; then
+              echo "Unexpected package in release asset $ASSET_ID"
+              exit 1
+            fi
+
+            cp "$RESTORE_DIR/package.deb" \
+              "apt/pool/main/lytescope_${VERSION}_${ARCH}.deb"
+          done < "$RESTORE_DIR/asset-ids"
+
       - name: Set up APT repo structure
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
-
-          rm -rf apt
 
           mkdir -p apt/pool/main
           mkdir -p apt/dists/stable/main/binary-all

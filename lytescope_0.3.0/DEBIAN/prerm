@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -e
+
+if [ ! -d /run/systemd/system ]; then
+  exit 0
+fi
+
+case "${1:-}" in
+  remove|upgrade|deconfigure)
+    systemctl stop lytescope.service >/dev/null 2>&1 || true
+    systemctl stop lytescope.timer >/dev/null 2>&1 || true
+    ;;
+esac
+
+if [ "${1:-}" = "remove" ]; then
+  systemctl disable lytescope.service >/dev/null 2>&1 || true
+  systemctl disable lytescope.timer >/dev/null 2>&1 || true
+fi
+
+exit 0

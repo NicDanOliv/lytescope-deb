@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+set -e
+
+chmod 600 /etc/lytescope/agent.conf
+
+# Skip service operations when systemd is not running.
+if [ ! -d /run/systemd/system ]; then
+  exit 0
+fi
+
+# Stop the previous timer when upgrading an existing agent.
+systemctl disable --now lytescope.timer >/dev/null 2>&1 || true
+
+systemctl daemon-reload
+systemctl enable lytescope.service
+
+# Start immediately only when valid linked configuration exists.
+if python3 -c '
+import sys
+
+sys.path.insert(0, "/usr/local/lib/lytescope")
+
+from lytescope_agent.config import load_config
+
+load_config()
+' >/dev/null 2>&1; then
+  systemctl restart lytescope.service
+else
+  echo "Lytescope installed. Run: sudo lytescope link SHARE_CODE"
+fi

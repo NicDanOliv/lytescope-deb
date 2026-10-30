@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -e
+
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "${1:-}" = "purge" ]; then
+  rm -f -- \
+    /var/lib/lytescope/inventory_cache.json \
+    /var/lib/lytescope/monitoring_status_cache
+
+  if [ -d /var/lib/lytescope ]; then
+    rmdir --ignore-fail-on-non-empty /var/lib/lytescope
+  fi
+fi
+
+exit 0

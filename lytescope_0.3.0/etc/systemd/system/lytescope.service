@@ -1,0 +1,16 @@
+[Unit]
+Description=Lytescope monitoring agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lytescope run
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+SuccessExitStatus=130
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
