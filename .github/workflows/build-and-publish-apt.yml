@@ -32,7 +32,7 @@ jobs:
 
       - name: Update version in control file
         run: |
-          sed -i "s/^Version:.*/Version: ${{ steps.version.outputs.VERSION }}/" lytescope_0.1.0/DEBIAN/control
+          sed -i "s/^Version:.*/Version: ${{ steps.version.outputs.VERSION }}/" lytescope_0.3.0/DEBIAN/control
 
       - name: Build .deb
         run: |

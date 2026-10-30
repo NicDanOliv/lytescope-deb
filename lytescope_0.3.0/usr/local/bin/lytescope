@@ -139,7 +139,7 @@ link_agent(){
   load_config
 
   LYTESCOPE_BASE_URL="$BASE_URL"
-  LYTESCOPE_AGENT_VERSION="${LYTESCOPE_AGENT_VERSION:-0.1.13}"
+  LYTESCOPE_AGENT_VERSION="${LYTESCOPE_AGENT_VERSION:-0.3.0}"
 
   if ! MACHINE_FINGERPRINT_HASH="$(machine_fingerprint_hash)"; then
     fail "Could not create a machine fingerprint."

@@ -20,7 +20,7 @@ def collect_payload(cpu_report):
   # Preserve the CPU window and its original timestamps.
   payload = dict(cpu_report)
 
-  payload['agent_version'] = os.environ.get('LYTESCOPE_AGENT_VERSION', '0.1.0',)
+  payload['agent_version'] = os.environ.get('LYTESCOPE_AGENT_VERSION', '0.3.0',)
 
   # Collect current snapshots after the CPU window ends.
   snapshot_started_at = time.time()
